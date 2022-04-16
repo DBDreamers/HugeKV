@@ -6,7 +6,6 @@ import (
 	"github.com/pingcap-incubator/tinykv/kv/storage"
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/kvrpcpb"
-	"sync"
 )
 
 // StandAloneStorage is an implementation of `Storage` for a single-node TinyKV instance. It does not
@@ -14,8 +13,7 @@ import (
 type StandAloneStorage struct {
 	// Your Data Here (1).
 	db *badger.DB
-	m  map[string]engine_util.DBIterator
-	mu sync.Mutex
+	//reader *StandAloneReader
 }
 
 func NewStandAloneStorage(conf *config.Config) *StandAloneStorage {
@@ -24,7 +22,7 @@ func NewStandAloneStorage(conf *config.Config) *StandAloneStorage {
 	db := engine_util.CreateDB(conf.DBPath, conf.Raft)
 	aloneStorage := StandAloneStorage{}
 	aloneStorage.db = db
-	aloneStorage.m = make(map[string]engine_util.DBIterator)
+	//aloneStorage.reader = &StandAloneReader{db.NewTransaction(false)}
 	return &aloneStorage
 }
 
@@ -44,7 +42,7 @@ func (s *StandAloneStorage) Stop() error {
 
 func (s *StandAloneStorage) Reader(ctx *kvrpcpb.Context) (storage.StorageReader, error) {
 	// Your Code Here (1).
-	return s, nil
+	return &StandAloneReader{s.db.NewTransaction(false)}, nil
 }
 
 func (s *StandAloneStorage) Write(ctx *kvrpcpb.Context, batch []storage.Modify) error {
@@ -66,28 +64,22 @@ func (s *StandAloneStorage) Write(ctx *kvrpcpb.Context, batch []storage.Modify) 
 	return nil
 }
 
-func (r *StandAloneStorage) GetCF(cf string, key []byte) ([]byte, error) {
-	val, err := engine_util.GetCF(r.db, cf, key)
-	if err != nil {
-		return nil, nil
-	}
-	return val, nil
+type StandAloneReader struct {
+	txn *badger.Txn
 }
 
-func (r *StandAloneStorage) IterCF(cf string) engine_util.DBIterator {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if it, ok := r.m[cf]; ok {
-		return it
+func (r *StandAloneReader) GetCF(cf string, key []byte) ([]byte, error) {
+	val, err := engine_util.GetCFFromTxn(r.txn, cf, key)
+	if err == badger.ErrKeyNotFound {
+		return nil, nil
 	}
-	iterator := engine_util.NewCFIterator(cf, r.db.NewTransaction(false))
-	r.m[cf] = iterator
+	return val, err
+}
+
+func (r *StandAloneReader) IterCF(cf string) engine_util.DBIterator {
+	iterator := engine_util.NewCFIterator(cf, r.txn)
 	return iterator
 }
-func (r *StandAloneStorage) Close() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for _, iterator := range r.m {
-		iterator.Close()
-	}
+func (r *StandAloneReader) Close() {
+	r.txn.Discard()
 }

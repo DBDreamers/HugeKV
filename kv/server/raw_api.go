@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"fmt"
 	"github.com/pingcap-incubator/tinykv/kv/storage"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/kvrpcpb"
 )
@@ -74,24 +73,22 @@ func (server *Server) RawScan(_ context.Context, req *kvrpcpb.RawScanRequest) (*
 	}
 	//2.获取该cf的迭代器
 	it := reader.IterCF(req.Cf)
+	defer it.Close()
 	kvPairs := make([]*kvrpcpb.KvPair, 0)
 	//3.找到迭代起始位置
 	it.Seek(req.StartKey)
-	var count uint32 = 0
 	//4.迭代
-	for count < req.Limit && it.Valid() {
+	for it.Seek(req.StartKey); len(kvPairs) < int(req.Limit) && it.Valid(); it.Next() {
 		item := it.Item()
 		pair := &kvrpcpb.KvPair{}
-		fmt.Printf("item:%v\n", item)
+		//fmt.Printf("item:%v\n", item)
 		pair.Key = item.KeyCopy(nil)
 		pair.Value, err = item.ValueCopy(nil)
 		if err != nil {
 			return nil, err
 		}
 		kvPairs = append(kvPairs, pair)
-		fmt.Printf("key:%v; value:%v\n", pair.Key, pair.Value)
-		count++
-		it.Next()
+		//fmt.Printf("key:%v; value:%v\n", pair.Key, pair.Value)
 	}
 	resp := &kvrpcpb.RawScanResponse{}
 	resp.Kvs = kvPairs
