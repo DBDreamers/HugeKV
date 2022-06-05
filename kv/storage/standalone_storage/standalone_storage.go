@@ -18,12 +18,7 @@ type StandAloneStorage struct {
 
 func NewStandAloneStorage(conf *config.Config) *StandAloneStorage {
 	// Your Code Here (1).
-	//create a database with engine_util
-	db := engine_util.CreateDB(conf.DBPath, conf.Raft)
-	aloneStorage := StandAloneStorage{}
-	aloneStorage.db = db
-	//aloneStorage.reader = &StandAloneReader{db.NewTransaction(false)}
-	return &aloneStorage
+	return &StandAloneStorage{engine_util.CreateDB(conf.DBPath, conf.Raft)}
 }
 
 func (s *StandAloneStorage) Start() error {
@@ -77,8 +72,7 @@ func (r *StandAloneReader) GetCF(cf string, key []byte) ([]byte, error) {
 }
 
 func (r *StandAloneReader) IterCF(cf string) engine_util.DBIterator {
-	iterator := engine_util.NewCFIterator(cf, r.txn)
-	return iterator
+	return engine_util.NewCFIterator(cf, r.txn)
 }
 func (r *StandAloneReader) Close() {
 	r.txn.Discard()
