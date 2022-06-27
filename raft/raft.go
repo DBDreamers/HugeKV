@@ -109,32 +109,28 @@ type Progress struct {
 }
 
 type Raft struct {
+	// Raft配置文件
 	config Config
-
+	// Raft的uid
 	id uint64
-
+	// 当前的任期
 	Term uint64
+	// 当前投票给的id
 	Vote uint64
-
 	// the log
 	RaftLog *RaftLog
-
 	// log replication progress of each peers
 	Prs map[uint64]*Progress
-
 	// this peer's role
 	State StateType
-
 	// votes records
-	votes     map[uint64]bool
+	votes map[uint64]bool
+	// 投出去的票数
 	voteCount int
-
 	// msgs need to send
 	msgs []pb.Message
-
 	// the leader id
 	Lead uint64
-
 	// heartbeat interval, should send
 	heartbeatTimeout int
 	// baseline of election interval
@@ -146,13 +142,11 @@ type Raft struct {
 	// Number of ticks since it reached last electionTimeout or received a
 	// valid message from current leader when it is a follower.
 	electionElapsed int
-
 	// leadTransferee is id of the leader transfer target when its value is not zero.
 	// Follow the procedure defined in section 3.10 of Raft phd thesis.
 	// (https://web.stanford.edu/~ouster/cgi-bin/papers/OngaroPhD.pdf)
 	// (Used in 3A leader transfer)
 	leadTransferee uint64
-
 	// Only one conf change may be pending (in the log, but not yet
 	// applied) at a time. This is enforced via PendingConfIndex, which
 	// is set to a value >= the log index of the latest pending
@@ -246,15 +240,14 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 // becomeCandidate transform this peer's state to candidate
 func (r *Raft) becomeCandidate() {
 	// Your Code Here (2A).
-
 	// 改变Raft状态
+	// 重置electionElapsed和electionTimeout
 	r.resetElectionTimeout()
 	r.Term += 1
 	r.State = StateCandidate
-	r.voteCount = 1
-
 	// 给自己投票
 	r.Vote = r.id
+	r.voteCount = 1
 	r.votes[r.id] = true
 }
 
@@ -262,10 +255,8 @@ func (r *Raft) becomeCandidate() {
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term    ***注意：project2AA并未实现***
-
 	// 改变Raft状态
 	r.State = StateLeader
-
 	// 发送heartBeat
 	r.heartbeatElapsed = 0
 	for _, p := range r.config.peers {
@@ -283,13 +274,17 @@ func (r *Raft) Step(m pb.Message) error {
 	case StateFollower:
 		switch m.MsgType {
 		case pb.MessageType_MsgHup:
+			// 本地选举消息
 			r.becomeCandidate()
 			r.startElection()
 		case pb.MessageType_MsgRequestVote:
+			// 处理投票消息
 			r.handleRequestVote(m)
 		case pb.MessageType_MsgHeartbeat:
+			// 处理心跳消息
 			r.handleHeartbeat(m)
 		case pb.MessageType_MsgAppend:
+			// 处理日志追加
 			r.handleAppendEntries(m)
 		}
 	case StateCandidate:
@@ -338,10 +333,12 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 
 // handleHeartbeat handle Heartbeat RPC request
 func (r *Raft) handleHeartbeat(m pb.Message) {
-	// Your Code Here (2A).
-	r.electionElapsed = 0
-	if m.Term > r.Term {
-		r.becomeFollower(m.Term, m.From)
+	if m.Term >= r.Term {
+		// Your Code Here (2A).
+		r.electionElapsed = 0
+		if m.Term > r.Term {
+			r.becomeFollower(m.Term, m.From)
+		}
 	}
 }
 
@@ -378,15 +375,17 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 
 	// 候选者Term比自己大，直接变为Follower
 	if m.Term > r.Term {
+		// 称为follower
 		r.becomeFollower(m.Term, m.From)
+		// 该选票不拒绝,即成功投出选票
 		response.Reject = false
+		response.Term = m.Term
 	}
 
 	// 还未给任何节点投票(或者给当前候选者投过票)并且候选者log不落后自己，即可投票
 	if (r.Vote == 0 || r.Vote == m.From) && r.checkLogs(m) {
 		// 投票
 		r.Vote = m.From
-
 		r.electionElapsed = 0
 		response.Reject = false
 	}
