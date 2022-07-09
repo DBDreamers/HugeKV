@@ -76,7 +76,7 @@ func newLog(storage Storage) *RaftLog {
 	if err != nil {
 		return nil
 	}
-	var entries []pb.Entry
+	entries, err := storage.Entries(firstIndex, lastIndex+1)
 	if err != nil {
 		return nil
 	}
@@ -101,17 +101,24 @@ func (l *RaftLog) maybeCompact() {
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
 	// unstable: index > stabled
+	if l.entries == nil || len(l.entries) == 0 {
+		return nil
+	}
+	if firstIndex := l.entries[0].Index; l.stabled >= firstIndex {
+		return l.entries[l.stabled-firstIndex+1:]
+	}
 	return l.entries
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	// 返回索引在(applied, committed]
-	entries, err := l.storage.Entries(l.applied+1, l.committed+1)
-	if err != nil {
-		return
+	// 返回索引在[applied+1, committed+1)
+	if l.entries == nil || len(l.entries) == 0 {
+		return nil
 	}
+	firstIndex := l.entries[0].Index
+	entries := l.entries[l.applied+1-firstIndex : l.committed+1-firstIndex]
 	return entries
 }
 
@@ -140,17 +147,23 @@ func (l *RaftLog) LastTerm() uint64 {
 		}
 		return entries[0].Term
 	}
-	return l.entries[0].Term
+	return l.entries[len(l.entries)-1].Term
 }
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
+	if i == 0 {
+		return 0, nil
+	}
 	if l.entries == nil || len(l.entries) == 0 {
 		return l.storage.Term(i)
 	}
 	firstIndex := l.entries[0].Index
 	realIndex := i - firstIndex
+	if int(realIndex) >= len(l.entries) {
+		return 0, ErrUnavailable
+	}
 	return l.entries[realIndex].Term, nil
 }
 
@@ -178,48 +191,60 @@ func (l *RaftLog) FirstIndexOfTargetTerm(term uint64) uint64 {
 }
 
 func (l *RaftLog) FirstIndex() uint64 {
+	if l.entries == nil || len(l.entries) == 0 {
+		return 0
+	}
 	return l.entries[0].Index
 }
 
-func (l *RaftLog) FirstSliceIndexOfTargetIndex(index uint64) int {
-	left := 0
-	right := len(l.entries) - 1
-	for left <= right {
-		mid := left + (right-left)/2
-		if l.entries[mid].Index == index {
-			return mid
-		} else if l.entries[mid].Index < index {
-			left = mid + 1
-		} else {
-			right = mid - 1
-		}
+func (l *RaftLog) SliceIndexOfTargetIndex(index uint64) int {
+	if l.entries == nil || len(l.entries) == 0 {
+		return -1
 	}
-	return len(l.entries)
+	return int(index - l.entries[0].Index)
 }
+
+//func (l *RaftLog) Entries(lo, hi uint64) []pb.Entry {
+//	if l.entries == nil || len(l.entries) == 0 {
+//		entries, err := l.storage.Entries(lo, hi)
+//		if err != nil {
+//			return nil
+//		}
+//		return entries
+//	}
+//	firstUnstableIndex := l.entries[0].Index
+//	if firstUnstableIndex <= lo {
+//		return l.entries[lo-firstUnstableIndex : hi-firstUnstableIndex+1]
+//	}
+//	if firstUnstableIndex > hi {
+//		entries, err := l.storage.Entries(lo, hi)
+//		if err != nil {
+//			return nil
+//		}
+//		return entries
+//	}
+//	entries, err := l.storage.Entries(lo, firstUnstableIndex)
+//	if err != nil {
+//		return nil
+//	}
+//	entries = append(entries, l.entries[0:hi-firstUnstableIndex+1]...)
+//	return entries
+//}
 
 func (l *RaftLog) Entries(lo, hi uint64) []pb.Entry {
 	if l.entries == nil || len(l.entries) == 0 {
-		entries, err := l.storage.Entries(lo, hi)
-		if err != nil {
-			return nil
-		}
-		return entries
-	}
-	firstUnstableIndex := l.entries[0].Index
-	if firstUnstableIndex <= lo {
-		return l.entries[lo-firstUnstableIndex : hi-firstUnstableIndex+1]
-	}
-	if firstUnstableIndex > hi {
-		entries, err := l.storage.Entries(lo, hi)
-		if err != nil {
-			return nil
-		}
-		return entries
-	}
-	entries, err := l.storage.Entries(lo, firstUnstableIndex-1)
-	if err != nil {
 		return nil
 	}
-	entries = append(entries, l.entries[0:hi-firstUnstableIndex+1]...)
-	return entries
+	firstIndex := l.entries[0].Index
+	return l.entries[lo-firstIndex : hi-firstIndex]
+}
+
+func (l *RaftLog) deleteEntries(start uint64) {
+	// 删除从start开始的日志
+	startRealIndex := l.SliceIndexOfTargetIndex(start)
+	l.entries = l.entries[:startRealIndex]
+	// 更新stabled
+	if l.stabled >= start {
+		l.stabled = start - 1
+	}
 }
