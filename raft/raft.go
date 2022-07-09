@@ -16,6 +16,7 @@ package raft
 
 import (
 	"errors"
+	"fmt"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"math/rand"
 	"time"
@@ -163,15 +164,15 @@ func newRaft(c *Config) *Raft {
 		panic(err.Error())
 	}
 	// Your Code Here (2A).
-	return &Raft{
+	raft := Raft{
 		config:           *c,
 		id:               c.ID,
-		Term:             0,                     // 初始Term为0
-		Vote:             0,                     // 0代表还没有给任何节点投票（Raft节点ID不为0）
-		RaftLog:          nil,                   // project2AA不考虑
-		Prs:              nil,                   // project2AA不考虑
-		State:            StateFollower,         // 初始为StateFollower
-		votes:            make(map[uint64]bool), // 记录自己给哪些节点投票，测试要用
+		Term:             0,                                        // 初始Term为0
+		Vote:             0,                                        // 0代表还没有给任何节点投票（Raft节点ID不为0）
+		RaftLog:          newLog(c.Storage),                        // project2AA不考虑
+		Prs:              make(map[uint64]*Progress, len(c.peers)), // project2AA不考虑
+		State:            StateFollower,                            // 初始为StateFollower
+		votes:            make(map[uint64]bool),                    // 记录自己给哪些节点投票，测试要用
 		msgs:             make([]pb.Message, 0),
 		Lead:             0,
 		heartbeatTimeout: c.HeartbeatTick,
@@ -181,13 +182,47 @@ func newRaft(c *Config) *Raft {
 		leadTransferee:   0, // project2AA不考虑
 		PendingConfIndex: 0, // project2AA不考虑
 	}
+	// initial prs
+	for _, peerID := range c.peers {
+		// matchIndex初始化为0, nextIndex初始化为lastLogIndex+1
+		raft.Prs[peerID] = &Progress{0, raft.RaftLog.LastIndex() + 1}
+	}
+	return &raft
 }
 
 // sendAppend sends an append RPC with new entries (if any) and the
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
-	return false
+	// 发送的时候,只能发送已经持久化的部分
+	var entries []*pb.Entry
+	low := r.Prs[to].Next
+	preLogIndex := low - 1
+	preLogTerm, err := r.RaftLog.Term(preLogIndex)
+	if err != nil {
+		return false
+	}
+	high := r.RaftLog.LastIndex()
+	high = min(high, r.RaftLog.stabled)
+	if high < low {
+		return false
+	}
+	// 需要发送的是[nextIndex, min(stabled, lastLogIndex)]
+	src := r.RaftLog.Entries(low, high)
+	for _, entry := range src {
+		entries = append(entries, &entry)
+	}
+
+	r.msgs = append(r.msgs, pb.Message{
+		MsgType: pb.MessageType_MsgAppend,
+		To:      to,
+		From:    r.id,
+		Term:    r.Term,
+		Entries: entries,
+		Index:   preLogIndex,
+		LogTerm: preLogTerm,
+	})
+	return true
 }
 
 // sendHeartbeat sends a heartbeat RPC to the given peer.
@@ -212,8 +247,16 @@ func (r *Raft) tick() {
 
 	// 选举超时，发起选举
 	if r.State != StateLeader && r.electionElapsed == r.electionTimeout {
-		r.becomeCandidate()
-		r.startElection()
+
+		err := r.Step(pb.Message{
+			MsgType: pb.MessageType_MsgHup,
+			To:      r.id,
+			From:    r.id,
+			Term:    r.Term,
+		})
+		if err != nil {
+			return
+		}
 	}
 
 	// 发送heartbeat
@@ -264,6 +307,18 @@ func (r *Raft) becomeLeader() {
 			r.sendHeartbeat(p)
 		}
 	}
+	// append一条no-op
+	entry := &pb.Entry{Index: r.RaftLog.LastIndex() + 1, Term: r.Term}
+	err := r.Step(pb.Message{
+		MsgType: pb.MessageType_MsgPropose,
+		To:      r.id,
+		From:    r.id,
+		Term:    r.Term,
+		Entries: []*pb.Entry{entry},
+	})
+	if err != nil {
+		return
+	}
 }
 
 // Step the entrance of handle message, see `MessageType`
@@ -303,32 +358,109 @@ func (r *Raft) Step(m pb.Message) error {
 		}
 	case StateLeader:
 		switch m.MsgType {
+		//case pb.MessageType_MsgHup:
+		//	r.becomeCandidate()
+		//	r.startElection()
 		case pb.MessageType_MsgRequestVote:
 			r.handleRequestVote(m)
 		case pb.MessageType_MsgHeartbeat:
 			r.handleHeartbeat(m)
 		case pb.MessageType_MsgBeat:
-			// 发送心跳
-			r.heartbeatElapsed = 0
-			for _, p := range r.config.peers {
-				if p != r.id {
-					r.sendHeartbeat(p)
-				}
-			}
+			r.handleMsgBeat(m)
 		case pb.MessageType_MsgAppend:
 			r.handleAppendEntries(m)
+		case pb.MessageType_MsgHeartbeatResponse:
+			r.handleHeartbeatResponse(m)
+		case pb.MessageType_MsgAppendResponse:
+			r.handleAppendEntriesResponse(m)
+
 		}
 	}
 	return nil
 }
 
+func (r *Raft) handleMsgBeat(m pb.Message) {
+	// 发送心跳
+	r.heartbeatElapsed = 0
+	for _, p := range r.config.peers {
+		if p != r.id {
+			r.sendHeartbeat(p)
+		}
+	}
+}
+
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
+	response := pb.Message{
+		MsgType: pb.MessageType_MsgAppendResponse,
+		To:      m.From,
+		From:    r.id,
+		Term:    r.Term,
+		Reject:  true,
+	}
+	if m.Term < r.Term {
+		r.msgs = append(r.msgs, response)
+		return
+	}
 	r.electionElapsed = 0
 	if m.Term >= r.Term {
 		r.becomeFollower(m.Term, m.From)
 	}
+	// 当前最新的日志索引落后
+	// 此处的Message.Index为preLogIndex, Message.Term为preLogTerm
+	fmt.Printf("m.index: %d\n", m.Index)
+	fmt.Printf("r.raftLog: %v\n", r.RaftLog)
+	term, err := r.RaftLog.Term(m.Index)
+	if err != nil {
+		return
+	}
+	if r.RaftLog.LastIndex() < m.Index || (term != r.RaftLog.LastTerm()) {
+		//// preLogIndex处无日志,记录XTerm为0
+		//response.LogTerm = 0
+		//// 记录Index为当前的最新日志的Index
+		//response.Index = r.RaftLog.LastIndex()
+		r.msgs = append(r.msgs, response)
+		return
+	}
+	//// 若preLogIndex处的日志的term和preLogTerm不相等
+	//term, err := r.RaftLog.Term(m.Index)
+	//if err != nil {
+	//	return
+	//}
+	//// preLogIndex处日志任期冲突
+	//if term != m.LogTerm {
+	//	// 冲突的任期
+	//	response.LogTerm = term
+	//	// 该冲突任期在日志中第一个位置
+	//	targetTerm := r.RaftLog.FirstIndexOfTargetTerm(term)
+	//	response.Index = targetTerm
+	//}
+	response.Reject = false
+	// 追加日志
+	for i, entry := range m.Entries {
+		index := m.Index + uint64(i) + 1
+		if index > r.RaftLog.LastIndex() {
+			r.RaftLog.entries = append(r.RaftLog.entries, *entry)
+		} else if index < r.RaftLog.FirstIndex() {
+			// 追加的日志没有被存储,即存在于快照中,则不处理
+			continue
+		} else {
+			// 当日志冲突时
+			term, _ := r.RaftLog.Term(index)
+			if term != entry.Term {
+				// 删除冲突日志当前和后续所有日志
+				r.RaftLog.entries = r.RaftLog.entries[:r.RaftLog.FirstSliceIndexOfTargetIndex(index)]
+				// 把新日志添加进来
+				r.RaftLog.entries = append(r.RaftLog.entries, *entry)
+			}
+		}
+	}
+	// 更新follower的commitIndex
+	r.updateCommitIndexForFollower(m.Commit)
+	// 当成功接收日志后,Index记录为最新的日志索引
+	response.Index = r.RaftLog.LastIndex()
+	r.msgs = append(r.msgs, response)
 }
 
 // handleHeartbeat handle Heartbeat RPC request
@@ -338,6 +470,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 		r.electionElapsed = 0
 		if m.Term > r.Term {
 			r.becomeFollower(m.Term, m.From)
+			r.updateCommitIndexForFollower(m.Commit)
 		}
 	}
 }
@@ -395,14 +528,14 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 // checkLogs 检查候选者的log是否不落后自己
 func (r *Raft) checkLogs(m pb.Message) bool {
 	// project2AA未实现
-	return true
+	lastTerm := r.RaftLog.LastTerm()
+	return lastTerm == 0 || m.LogTerm > lastTerm || (m.LogTerm == lastTerm && m.Index >= r.RaftLog.LastIndex())
 }
 
 func (r *Raft) handleRequestVoteResponse(m pb.Message) {
 	// 成功获得一个选票
 	if m.Reject == false {
 		r.voteCount++
-
 		// 变为Leader
 		if r.voteCount > len(r.config.peers)/2 && r.State == StateCandidate {
 			r.becomeLeader()
@@ -431,6 +564,8 @@ func (r *Raft) startElection() {
 				To:      p,
 				From:    r.id,
 				Term:    r.Term,
+				Index:   r.RaftLog.LastIndex(),
+				LogTerm: r.RaftLog.LastTerm(),
 			})
 		}
 	}
@@ -441,4 +576,32 @@ func (r *Raft) resetElectionTimeout() {
 	rand.Seed(time.Now().UnixNano())
 	r.electionElapsed = 0
 	r.electionTimeout = r.config.ElectionTick + rand.Intn(r.config.ElectionTick)
+}
+
+func (r *Raft) updateCommitIndexForFollower(commit uint64) {
+	if commit > r.RaftLog.committed {
+		r.RaftLog.committed = min(commit, r.RaftLog.LastIndex())
+	}
+}
+
+func (r *Raft) handleHeartbeatResponse(m pb.Message) {
+	if m.Term > r.Term {
+		r.becomeFollower(m.Term, m.From)
+	}
+}
+
+func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
+	if m.Term > r.Term {
+		r.becomeFollower(m.Term, m.From)
+		return
+	}
+	// 若返回失败
+	if m.Reject {
+		// 则nextIndex回退
+		r.Prs[m.From].Next--
+		return
+	}
+	// 若成功
+	r.Prs[m.From].Match = m.Index
+	r.Prs[m.From].Next = m.Index + 1
 }
