@@ -16,6 +16,7 @@ package raft
 
 import (
 	"errors"
+	"reflect"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -70,12 +71,22 @@ type Ready struct {
 type RawNode struct {
 	Raft *Raft
 	// Your Data Here (2A).
+	softState SoftState
+	hardState pb.HardState
 }
 
 // NewRawNode returns a new RawNode given configuration and a list of raft peers.
 func NewRawNode(config *Config) (*RawNode, error) {
 	// Your Code Here (2A).
-	return nil, nil
+	node := &RawNode{
+		Raft: newRaft(config),
+		softState: SoftState{
+			Lead:      0,
+			RaftState: StateFollower,
+		},
+	}
+	node.hardState, _, _ = config.Storage.InitialState()
+	return node, nil
 }
 
 // Tick advances the internal logical clock by a single tick.
@@ -143,12 +154,62 @@ func (rn *RawNode) Step(m pb.Message) error {
 // Ready returns the current point-in-time state of this RawNode.
 func (rn *RawNode) Ready() Ready {
 	// Your Code Here (2A).
-	return Ready{}
+	hs := pb.HardState{}
+	var ss *SoftState
+
+	// HardState出现更新
+	if !reflect.DeepEqual(rn.hardState, rn.GetHardState()) {
+		hs = rn.GetHardState()
+		rn.hardState = hs
+	}
+
+	// SoftSate出现更新
+	if !reflect.DeepEqual(rn.softState, *rn.GetSoftState()) {
+		ss = rn.GetSoftState()
+		rn.softState = *ss
+	}
+
+	// specifies entries to be saved to stable storage BEFORE Messages are sent.
+	entries := rn.Raft.RaftLog.Entries(rn.Raft.RaftLog.stabled+1, rn.Raft.RaftLog.entries[len(rn.Raft.RaftLog.entries)-1].Index+1)
+
+	// specifies entries to be committed to a
+	// store/state-machine. These have previously been committed to stable store.
+	committedEntries := rn.Raft.RaftLog.nextEnts()
+
+	// specifies outbound messages to be sent AFTER Entries are committed to stable storage.
+	var messages []pb.Message
+	messages = append(messages, rn.Raft.msgs...)
+
+	// 清空msgs
+	rn.Raft.msgs = make([]pb.Message, 0)
+
+	return Ready{
+		SoftState:        ss,
+		HardState:        hs,
+		Entries:          entries,
+		CommittedEntries: committedEntries,
+		Messages:         messages,
+	}
 }
 
 // HasReady called when RawNode user need to check if any Ready pending.
 func (rn *RawNode) HasReady() bool {
 	// Your Code Here (2A).
+	// 是否有未被apply的日志
+	if rn.Raft.RaftLog.applied < rn.Raft.RaftLog.committed {
+		return true
+	}
+
+	// 是否有有未被持久化的日志
+	if rn.Raft.RaftLog.stabled+1 < rn.Raft.RaftLog.entries[len(rn.Raft.RaftLog.entries)-1].Index {
+		return true
+	}
+
+	// 是否有需要发送的消息
+	if len(rn.Raft.msgs) > 0 {
+		return true
+	}
+
 	return false
 }
 
@@ -156,6 +217,16 @@ func (rn *RawNode) HasReady() bool {
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
 	// Your Code Here (2A).
+
+	// 推进applied
+	if len(rd.CommittedEntries) > 0 && rd.CommittedEntries[len(rd.CommittedEntries)-1].Index > rn.Raft.RaftLog.applied {
+		rn.Raft.RaftLog.applied = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
+	}
+
+	// 推进stabled
+	if len(rd.Entries) > 0 && rd.Entries[len(rd.Entries)-1].Index > rn.Raft.RaftLog.stabled {
+		rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
+	}
 }
 
 // GetProgress return the Progress of this node and its peers, if this
@@ -173,4 +244,19 @@ func (rn *RawNode) GetProgress() map[uint64]Progress {
 // TransferLeader tries to transfer leadership to the given transferee.
 func (rn *RawNode) TransferLeader(transferee uint64) {
 	_ = rn.Raft.Step(pb.Message{MsgType: pb.MessageType_MsgTransferLeader, From: transferee})
+}
+
+func (rn *RawNode) GetHardState() pb.HardState {
+	return pb.HardState{
+		Term:   rn.Raft.Term,
+		Vote:   rn.Raft.Vote,
+		Commit: rn.Raft.RaftLog.committed,
+	}
+}
+
+func (rn *RawNode) GetSoftState() *SoftState {
+	return &SoftState{
+		Lead:      rn.Raft.Lead,
+		RaftState: rn.Raft.State,
+	}
 }
