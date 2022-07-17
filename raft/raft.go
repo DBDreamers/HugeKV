@@ -16,6 +16,7 @@ package raft
 
 import (
 	"errors"
+	"fmt"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"math/rand"
 	"time"
@@ -52,11 +53,11 @@ type Config struct {
 	// ID is the identity of the local raft. ID cannot be 0.
 	ID uint64
 
-	// peers contains the IDs of all nodes (including self) in the raft cluster. It
+	// Peers contains the IDs of all nodes (including self) in the raft cluster. It
 	// should only be set when starting a new raft cluster. Restarting raft from
-	// previous configuration will panic if peers is set. peer is private and only
+	// previous configuration will panic if Peers is set. peer is private and only
 	// used for testing right now.
-	peers []uint64
+	Peers []uint64
 
 	// ElectionTick is the number of Node.Tick invocations that must pass between
 	// elections. That is, if a follower does not receive any message from the
@@ -175,7 +176,7 @@ func newRaft(c *Config) *Raft {
 		Term:             state.Term,                               // 初始Term为0
 		Vote:             state.Vote,                               // 0代表还没有给任何节点投票（Raft节点ID不为0）
 		RaftLog:          newLog(c.Storage),                        // project2AA不考虑
-		Prs:              make(map[uint64]*Progress, len(c.peers)), // project2AA不考虑
+		Prs:              make(map[uint64]*Progress, len(c.Peers)), // project2AA不考虑
 		State:            StateFollower,                            // 初始为StateFollower
 		votes:            make(map[uint64]bool),                    // 记录自己给哪些节点投票，测试要用
 		msgs:             make([]pb.Message, 0),
@@ -188,7 +189,7 @@ func newRaft(c *Config) *Raft {
 		PendingConfIndex: 0, // project2AA不考虑
 	}
 	// initial prs
-	for _, peerID := range c.peers {
+	for _, peerID := range c.Peers {
 		// matchIndex初始化为0, nextIndex初始化为lastLogIndex+1
 		if peerID == c.ID {
 			raft.Prs[peerID] = &Progress{raft.RaftLog.LastIndex(), raft.RaftLog.LastIndex() + 1}
@@ -277,7 +278,7 @@ func (r *Raft) tick() {
 }
 
 func (r *Raft) sendHeartbeatOneRound() {
-	for _, p := range r.config.peers {
+	for _, p := range r.config.Peers {
 		if p != r.id {
 			r.sendHeartbeat(p)
 		}
@@ -287,6 +288,7 @@ func (r *Raft) sendHeartbeatOneRound() {
 // becomeFollower transform this peer's state to Follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	// Your Code Here (2A).
+	r.log("becomeFollower")
 	r.State = StateFollower
 	r.Term = term
 	r.Lead = lead
@@ -299,6 +301,7 @@ func (r *Raft) becomeCandidate() {
 	// Your Code Here (2A).
 	// 改变Raft状态
 	// 重置electionElapsed和electionTimeout
+	r.log("becomeCandidate")
 	r.resetElectionTimeout()
 	r.Term += 1
 	r.State = StateCandidate
@@ -314,6 +317,7 @@ func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term    ***注意：project2AA并未实现***
 	// 改变Raft状态
+	r.log("becomeLeader")
 	r.State = StateLeader
 	// 初始化nextIndex和matchIndex
 	for id, pro := range r.Prs {
@@ -516,6 +520,7 @@ func (r *Raft) removeNode(id uint64) {
 
 // handleRequestVote 处理投票请求
 func (r *Raft) handleRequestVote(m pb.Message) {
+	r.log("handleRequestVote")
 	response := pb.Message{
 		MsgType: pb.MessageType_MsgRequestVoteResponse,
 		To:      m.From,
@@ -564,14 +569,14 @@ func (r *Raft) handleRequestVoteResponse(m pb.Message) {
 	if m.Reject == false {
 		r.voteSuccessCount++
 		// 变为Leader
-		if r.voteSuccessCount > len(r.config.peers)/2 {
+		if r.voteSuccessCount > len(r.config.Peers)/2 {
 			r.becomeLeader()
 			return
 		}
 	} else {
 		r.voteFailCount++
 		// 当有一半及以上的节点投了反对票,则变回follower
-		if r.voteFailCount > len(r.config.peers)/2 {
+		if r.voteFailCount > len(r.config.Peers)/2 {
 			r.becomeFollower(r.Term, 0)
 			return
 		}
@@ -581,15 +586,16 @@ func (r *Raft) handleRequestVoteResponse(m pb.Message) {
 
 // startElection 发起选举
 func (r *Raft) startElection() {
+	r.log("startElection")
 	// 只有一个节点
 	r.Vote = r.id
-	if len(r.config.peers) == 1 {
+	if len(r.config.Peers) == 1 {
 		r.becomeLeader()
 		return
 	}
 
 	// 发送投票请求
-	for _, p := range r.config.peers {
+	for _, p := range r.config.Peers {
 		if p != r.id {
 			r.msgs = append(r.msgs, pb.Message{
 				MsgType: pb.MessageType_MsgRequestVote,
@@ -701,4 +707,12 @@ func (r *Raft) updateCommitIndexForLeader() {
 			break
 		}
 	}
+}
+
+func (r *Raft) log(m string) {
+	fmt.Print(r.id)
+	fmt.Print("   ")
+	fmt.Print(r.Term)
+	fmt.Print("   ")
+	fmt.Println(m)
 }

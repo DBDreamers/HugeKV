@@ -57,6 +57,7 @@ func (c *Cluster) Start() {
 	ctx := context.TODO()
 	clusterID := c.schedulerClient.GetClusterID(ctx)
 
+	// create DBs
 	for storeID := uint64(1); storeID <= uint64(c.count); storeID++ {
 		dbPath, err := ioutil.TempDir("", c.baseDir)
 		if err != nil {
@@ -99,6 +100,7 @@ func (c *Cluster) Start() {
 		RegionEpoch: regionEpoch,
 	}
 
+	// create peers
 	for storeID, engine := range c.engines {
 		peer := NewPeer(storeID, storeID)
 		firstRegion.Peers = append(firstRegion.Peers, peer)

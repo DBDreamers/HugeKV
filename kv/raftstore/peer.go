@@ -112,11 +112,11 @@ type peer struct {
 }
 
 func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, region *metapb.Region, regionSched chan<- worker.Task,
-	meta *metapb.Peer) (*peer, error) {
-	if meta.GetId() == util.InvalidID {
+	m *metapb.Peer) (*peer, error) {
+	if m.GetId() == util.InvalidID {
 		return nil, fmt.Errorf("invalid peer id")
 	}
-	tag := fmt.Sprintf("[region %v] %v", region.GetId(), meta.GetId())
+	tag := fmt.Sprintf("[region %v] %v", region.GetId(), m.GetId())
 
 	ps, err := NewPeerStorage(engines, region, regionSched, tag)
 	if err != nil {
@@ -124,13 +124,18 @@ func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, r
 	}
 
 	appliedIndex := ps.AppliedIndex()
-
+	rg, _ := meta.GetRegionLocalState(engines.Kv, region.GetId())
+	prs := make([]uint64, 0)
+	for _, p := range rg.Region.Peers {
+		prs = append(prs, p.Id)
+	}
 	raftCfg := &raft.Config{
-		ID:            meta.GetId(),
+		ID:            m.GetId(),
 		ElectionTick:  cfg.RaftElectionTimeoutTicks,
 		HeartbeatTick: cfg.RaftHeartbeatTicks,
 		Applied:       appliedIndex,
 		Storage:       ps,
+		Peers:         prs,
 	}
 
 	raftGroup, err := raft.NewRawNode(raftCfg)
@@ -138,7 +143,7 @@ func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, r
 		return nil, err
 	}
 	p := &peer{
-		Meta:                  meta,
+		Meta:                  m,
 		regionId:              region.GetId(),
 		RaftGroup:             raftGroup,
 		peerStorage:           ps,
