@@ -122,6 +122,16 @@ func (d *peerMsgHandler) Apply(cmd *raft_cmdpb.Request, resp *raft_cmdpb.RaftCmd
 			Delete:  &raft_cmdpb.DeleteResponse{},
 		}
 		resp.Responses = append(resp.Responses, &ret)
+	case raft_cmdpb.CmdType_Snap:
+		ret := raft_cmdpb.Response{
+			CmdType: raft_cmdpb.CmdType_Snap,
+			Snap: &raft_cmdpb.SnapResponse{
+				Region: &metapb.Region{
+					Id: d.regionId,
+				},
+			},
+		}
+		resp.Responses = append(resp.Responses, &ret)
 	}
 }
 
