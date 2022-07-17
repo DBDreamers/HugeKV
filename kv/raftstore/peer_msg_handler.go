@@ -65,12 +65,16 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		}
 		cmd := raft_cmdpb.RaftCmdRequest{}
 		proto.Unmarshal(entry.Data, &cmd)
+		var ifSnap bool
 		for _, request := range cmd.Requests {
-			d.Apply(request, &resp)
+			ifSnap = d.Apply(request, &resp)
 		}
 		for index, prop := range d.proposals {
 			if entry.Index == prop.index {
 				prop.cb.Done(&resp)
+				if ifSnap {
+					prop.cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
+				}
 				d.proposals = append(d.proposals[0:index], d.proposals[index+1:]...)
 				break
 			}
@@ -81,7 +85,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	d.RaftGroup.Advance(ready)
 }
 
-func (d *peerMsgHandler) Apply(cmd *raft_cmdpb.Request, resp *raft_cmdpb.RaftCmdResponse) {
+func (d *peerMsgHandler) Apply(cmd *raft_cmdpb.Request, resp *raft_cmdpb.RaftCmdResponse) bool {
 	wb := engine_util.WriteBatch{}
 	switch cmd.CmdType {
 	case raft_cmdpb.CmdType_Put:
@@ -95,6 +99,7 @@ func (d *peerMsgHandler) Apply(cmd *raft_cmdpb.Request, resp *raft_cmdpb.RaftCmd
 			Put:     &raft_cmdpb.PutResponse{},
 		}
 		resp.Responses = append(resp.Responses, &ret)
+		return false
 	case raft_cmdpb.CmdType_Get:
 		txn := d.ctx.engine.Raft.NewTransaction(false)
 		iter := txn.NewIterator(badger.DefaultIteratorOptions)
@@ -111,6 +116,7 @@ func (d *peerMsgHandler) Apply(cmd *raft_cmdpb.Request, resp *raft_cmdpb.RaftCmd
 			},
 		}
 		resp.Responses = append(resp.Responses, &ret)
+		return false
 	case raft_cmdpb.CmdType_Delete:
 		wb.DeleteCF(cmd.Delete.Cf, cmd.Delete.Key)
 		err := wb.WriteToDB(d.ctx.engine.Kv)
@@ -122,17 +128,22 @@ func (d *peerMsgHandler) Apply(cmd *raft_cmdpb.Request, resp *raft_cmdpb.RaftCmd
 			Delete:  &raft_cmdpb.DeleteResponse{},
 		}
 		resp.Responses = append(resp.Responses, &ret)
+		return false
 	case raft_cmdpb.CmdType_Snap:
 		ret := raft_cmdpb.Response{
 			CmdType: raft_cmdpb.CmdType_Snap,
 			Snap: &raft_cmdpb.SnapResponse{
 				Region: &metapb.Region{
-					Id: d.regionId,
+					Id:       d.regionId,
+					StartKey: d.peer.Region().StartKey,
+					EndKey:   d.peer.Region().EndKey,
 				},
 			},
 		}
 		resp.Responses = append(resp.Responses, &ret)
+		return true
 	}
+	return false
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
