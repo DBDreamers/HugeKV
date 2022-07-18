@@ -210,7 +210,6 @@ func (rn *RawNode) HasReady() bool {
 		return true
 	}
 
-
 	// HardState出现更新
 	if !reflect.DeepEqual(rn.hardState, rn.GetHardState()) {
 		return true
