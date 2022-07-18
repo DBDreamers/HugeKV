@@ -5,6 +5,8 @@ import (
 	"github.com/golang/protobuf/proto"
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+	"github.com/pingcap-incubator/tinykv/raft"
+	"strconv"
 	"time"
 
 	"github.com/Connor1996/badger/y"
@@ -86,6 +88,9 @@ func (d *peerMsgHandler) HandleRaftReady() {
 
 func (d *peerMsgHandler) Apply(cmd *raft_cmdpb.Request, resp *raft_cmdpb.RaftCmdResponse) bool {
 	wb := engine_util.WriteBatch{}
+	defer func() {
+		d.log("applied: cmd: %+v, resp: %+v", *cmd, resp)
+	}()
 	switch cmd.CmdType {
 	case raft_cmdpb.CmdType_Put:
 		wb.SetCF(cmd.Put.Cf, cmd.Put.Key, cmd.Put.Value)
@@ -98,27 +103,26 @@ func (d *peerMsgHandler) Apply(cmd *raft_cmdpb.Request, resp *raft_cmdpb.RaftCmd
 			Put:     &raft_cmdpb.PutResponse{},
 		}
 		resp.Responses = append(resp.Responses, &ret)
+		//d.log("applying put: ", cmd.Put.Cf, cmd.)
 		return false
 	case raft_cmdpb.CmdType_Get:
-		txn := d.ctx.engine.Raft.NewTransaction(false)
+		if d.RaftGroup.Raft.State != raft.StateLeader {
+			return false
+		}
 		ret := raft_cmdpb.Response{
 			CmdType: raft_cmdpb.CmdType_Get,
 			Get:     &raft_cmdpb.GetResponse{},
 		}
-		item, err := txn.Get(cmd.Get.Key)
+		val, err := engine_util.GetCF(d.ctx.engine.Kv, cmd.Get.Cf, cmd.Get.Key)
 		if err != nil {
 			BindRespError(resp, err)
 			resp.Responses = append(resp.Responses, &ret)
-			return false
-		}
-		val, err := item.Value()
-		if err != nil {
-			BindRespError(resp, err)
-			resp.Responses = append(resp.Responses, &ret)
+			d.log("shit2")
 			return false
 		}
 		ret.Get.Value = val
 		resp.Responses = append(resp.Responses, &ret)
+		d.log("shit3")
 		return false
 	case raft_cmdpb.CmdType_Delete:
 		wb.DeleteCF(cmd.Delete.Cf, cmd.Delete.Key)
@@ -218,6 +222,17 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 	// Your Code Here (2B).
+	d.log("ready to propose: +%v", *msg.Requests[0])
+	if d.peer.RaftGroup.Raft.State != raft.StateLeader {
+		resp := raft_cmdpb.RaftCmdResponse{
+			Header: &raft_cmdpb.RaftResponseHeader{
+				CurrentTerm: d.Term(),
+			},
+		}
+		BindRespError(&resp, &util.ErrNotLeader{RegionId: d.regionId})
+		cb.Done(&resp)
+		return
+	}
 	b, _ := proto.Marshal(msg)
 	entry := pb.Entry{
 		Data: b,
@@ -232,6 +247,14 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		term:  d.Term(),
 		cb:    cb,
 	})
+}
+
+const debug = true
+
+func (r *peerMsgHandler) log(format string, args ...interface{}) {
+	if debug {
+		fmt.Printf("["+strconv.Itoa(int(r.RaftGroup.Raft.GetId()))+"]"+"peer_msg_handler: "+format+"\n", args...)
+	}
 }
 
 func (d *peerMsgHandler) onTick() {

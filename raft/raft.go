@@ -221,6 +221,10 @@ func newRaft(c *Config) *Raft {
 	return &raft
 }
 
+func (r *Raft) GetId() uint64 {
+	return r.id
+}
+
 // sendAppend sends an append RPC with new entries (if any) and the
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
@@ -253,6 +257,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 		LogTerm: preLogTerm,
 		Commit:  r.RaftLog.committed,
 	})
+	r.log("send append to %d, index range: %d ~ %d ", to, low, high)
 	return true
 }
 
@@ -432,6 +437,7 @@ func (r *Raft) handleMsgBeat(m pb.Message) {
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
+	r.log("handle append from %d", m.From)
 	response := pb.Message{
 		MsgType: pb.MessageType_MsgAppendResponse,
 		To:      m.From,
@@ -678,6 +684,7 @@ func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 func (r *Raft) handlePropose(m pb.Message) {
 	// 处理Propose
 	// 添加到本地
+	r.log("handle propose")
 	for _, entry := range m.Entries {
 		entry.Index = r.RaftLog.LastIndex() + 1
 		entry.Term = r.Term
@@ -736,12 +743,13 @@ const debug = true
 
 func (r *Raft) log(format string, args ...interface{}) {
 	if debug {
-		s := "%c[0;40;%dm [%v][%v][%v]: " + format + "%c[0m\n"
 		outputColor := 30 + r.id
+		sprintf := fmt.Sprintf("%c[0;40;%dm id[%v]state[%v]term[%v]commited[%v]applied[%v]: %c[0m",
+			0x1B, outputColor, r.id, r.State.StateInfo(), r.Term, r.RaftLog.committed, r.RaftLog.applied, 0x1B)
 		if len(args) != 0 {
-			fmt.Printf(s, 0x1B, outputColor, r.id, r.State.StateInfo(), r.Term, args, 0x1B)
+			fmt.Printf(sprintf+format+"\n", args...)
 		} else {
-			fmt.Printf(s, 0x1B, outputColor, r.id, r.State.StateInfo(), r.Term, 0x1B)
+			fmt.Printf(sprintf + format + "\n")
 		}
 	}
 }
