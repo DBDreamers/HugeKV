@@ -127,7 +127,7 @@ func TestLeaderCycle2AA(t *testing.T) {
 // lower-term ones.
 func TestLeaderElectionOverwriteNewerLogs2AB(t *testing.T) {
 	cfg := func(c *Config) {
-		c.peers = idsBySize(5)
+		c.Peers = idsBySize(5)
 	}
 	// This network represents the results of the following sequence of
 	// events:
@@ -1685,7 +1685,7 @@ func idsBySize(size int) []uint64 {
 func newTestConfig(id uint64, peers []uint64, election, heartbeat int, storage Storage) *Config {
 	return &Config{
 		ID:            id,
-		peers:         peers,
+		Peers:         peers,
 		ElectionTick:  election,
 		HeartbeatTick: heartbeat,
 		Storage:       storage,
