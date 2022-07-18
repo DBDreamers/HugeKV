@@ -3,6 +3,7 @@ package raftstore
 import (
 	"bytes"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/Connor1996/badger"
@@ -308,6 +309,36 @@ func ClearMeta(engines *engine_util.Engines, kvWB, raftWB *engine_util.WriteBatc
 // never be committed
 func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.WriteBatch) error {
 	// Your Code Here (2B).
+	// 持久化raftLog
+	for _, entry := range entries {
+		key := meta.RaftLogKey(ps.region.Id, entry.Index)
+		err := raftWB.SetMeta(key, &entry)
+		if err != nil {
+			return err
+		}
+	}
+	// 删除不会再被commit的日志, 即该次持久化的最高entry的index之后的已持久化日志,是否有term小于该entry的term的情况,若有则进行删除
+	index := entries[len(entries)-1].Index
+	term := entries[len(entries)-1].Term
+	lastIndex, err := ps.LastIndex()
+	if err != nil {
+		return err
+	}
+	entriesSinceIndex, _ := ps.Entries(index+1, lastIndex+1)
+
+	// 删除不会提交的日志
+	for _, entry := range entriesSinceIndex {
+		if term > entry.Term {
+			for i := entry.Index; i <= lastIndex; i++ {
+				raftWB.DeleteMeta(meta.RaftLogKey(ps.region.Id, i))
+			}
+			break
+		}
+	}
+	err = raftWB.WriteToDB(ps.Engines.Raft)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -331,7 +362,20 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, error) {
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
-	return nil, nil
+	// Append Entries
+	wb := &engine_util.WriteBatch{}
+	var err error
+	if len(ready.Entries) > 0 {
+		ps.Append(ready.Entries, wb)
+		wb.Reset()
+	}
+	// Apply HardState
+	if !reflect.DeepEqual(ready.HardState, eraftpb.HardState{}) {
+		ps.raftState.HardState = &ready.HardState
+		wb.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
+		err = wb.WriteToDB(ps.Engines.Raft)
+	}
+	return nil, err
 }
 
 func (ps *PeerStorage) ClearData() {

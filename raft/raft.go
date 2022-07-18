@@ -16,8 +16,10 @@ package raft
 
 import (
 	"errors"
+	"fmt"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"math/rand"
+	"strconv"
 	"time"
 )
 
@@ -32,6 +34,18 @@ const (
 	StateCandidate
 	StateLeader
 )
+
+func (s *StateType) StateInfo() string {
+	switch *s {
+	case StateFollower:
+		return "follower"
+	case StateCandidate:
+		return "candidate"
+	case StateLeader:
+		return "leader"
+	}
+	return ""
+}
 
 var stmap = [...]string{
 	"StateFollower",
@@ -165,19 +179,25 @@ func newRaft(c *Config) *Raft {
 		panic(err.Error())
 	}
 	// Your Code Here (2A).
-	state, _, err := c.Storage.InitialState()
+	state, confState, err := c.Storage.InitialState()
 	if err != nil {
 		return nil
+	}
+	var peers []uint64
+	if c.peers == nil || len(c.peers) == 0 {
+		peers = confState.Nodes
+	} else {
+		peers = c.peers
 	}
 	raft := Raft{
 		config:           *c,
 		id:               c.ID,
-		Term:             state.Term,                               // 初始Term为0
-		Vote:             state.Vote,                               // 0代表还没有给任何节点投票（Raft节点ID不为0）
-		RaftLog:          newLog(c.Storage),                        // project2AA不考虑
-		Prs:              make(map[uint64]*Progress, len(c.peers)), // project2AA不考虑
-		State:            StateFollower,                            // 初始为StateFollower
-		votes:            make(map[uint64]bool),                    // 记录自己给哪些节点投票，测试要用
+		Term:             state.Term,                             // 初始Term为0
+		Vote:             state.Vote,                             // 0代表还没有给任何节点投票（Raft节点ID不为0）
+		RaftLog:          newLog(c.Storage),                      // project2AA不考虑
+		Prs:              make(map[uint64]*Progress, len(peers)), // project2AA不考虑
+		State:            StateFollower,                          // 初始为StateFollower
+		votes:            make(map[uint64]bool),                  // 记录自己给哪些节点投票，测试要用
 		msgs:             make([]pb.Message, 0),
 		Lead:             0,
 		heartbeatTimeout: c.HeartbeatTick,
@@ -187,8 +207,9 @@ func newRaft(c *Config) *Raft {
 		leadTransferee:   0, // project2AA不考虑
 		PendingConfIndex: 0, // project2AA不考虑
 	}
+	raft.log("peers: %v", peers)
 	// initial prs
-	for _, peerID := range c.peers {
+	for _, peerID := range peers {
 		// matchIndex初始化为0, nextIndex初始化为lastLogIndex+1
 		if peerID == c.ID {
 			raft.Prs[peerID] = &Progress{raft.RaftLog.LastIndex(), raft.RaftLog.LastIndex() + 1}
@@ -196,7 +217,12 @@ func newRaft(c *Config) *Raft {
 		}
 		raft.Prs[peerID] = &Progress{0, raft.RaftLog.LastIndex() + 1}
 	}
+	raft.log("init, raftLog: %+v", *raft.RaftLog)
 	return &raft
+}
+
+func (r *Raft) GetId() uint64 {
+	return r.id
 }
 
 // sendAppend sends an append RPC with new entries (if any) and the
@@ -231,6 +257,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 		LogTerm: preLogTerm,
 		Commit:  r.RaftLog.committed,
 	})
+	r.log("send append to %d, index range: %d ~ %d ", to, low, high)
 	return true
 }
 
@@ -277,7 +304,7 @@ func (r *Raft) tick() {
 }
 
 func (r *Raft) sendHeartbeatOneRound() {
-	for _, p := range r.config.peers {
+	for p, _ := range r.Prs {
 		if p != r.id {
 			r.sendHeartbeat(p)
 		}
@@ -287,6 +314,9 @@ func (r *Raft) sendHeartbeatOneRound() {
 // becomeFollower transform this peer's state to Follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	// Your Code Here (2A).
+	if term > r.Term {
+		r.log("becomeFollower: term:" + strconv.Itoa(int(term)) + " lead:" + strconv.Itoa(int(lead)))
+	}
 	r.State = StateFollower
 	r.Term = term
 	r.Lead = lead
@@ -299,6 +329,7 @@ func (r *Raft) becomeCandidate() {
 	// Your Code Here (2A).
 	// 改变Raft状态
 	// 重置electionElapsed和electionTimeout
+	r.log("becomeCandidate")
 	r.resetElectionTimeout()
 	r.Term += 1
 	r.State = StateCandidate
@@ -314,6 +345,7 @@ func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term    ***注意：project2AA并未实现***
 	// 改变Raft状态
+	r.log("becomeLeader")
 	r.State = StateLeader
 	// 初始化nextIndex和matchIndex
 	for id, pro := range r.Prs {
@@ -405,6 +437,7 @@ func (r *Raft) handleMsgBeat(m pb.Message) {
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
+	r.log("handle append from %d", m.From)
 	response := pb.Message{
 		MsgType: pb.MessageType_MsgAppendResponse,
 		To:      m.From,
@@ -516,6 +549,7 @@ func (r *Raft) removeNode(id uint64) {
 
 // handleRequestVote 处理投票请求
 func (r *Raft) handleRequestVote(m pb.Message) {
+	r.log("handleRequestVote")
 	response := pb.Message{
 		MsgType: pb.MessageType_MsgRequestVoteResponse,
 		To:      m.From,
@@ -564,14 +598,14 @@ func (r *Raft) handleRequestVoteResponse(m pb.Message) {
 	if m.Reject == false {
 		r.voteSuccessCount++
 		// 变为Leader
-		if r.voteSuccessCount > len(r.config.peers)/2 {
+		if r.voteSuccessCount > len(r.Prs)/2 {
 			r.becomeLeader()
 			return
 		}
 	} else {
 		r.voteFailCount++
 		// 当有一半及以上的节点投了反对票,则变回follower
-		if r.voteFailCount > len(r.config.peers)/2 {
+		if r.voteFailCount > len(r.Prs)/2 {
 			r.becomeFollower(r.Term, 0)
 			return
 		}
@@ -581,15 +615,16 @@ func (r *Raft) handleRequestVoteResponse(m pb.Message) {
 
 // startElection 发起选举
 func (r *Raft) startElection() {
+	r.log("startElection")
 	// 只有一个节点
 	r.Vote = r.id
-	if len(r.config.peers) == 1 {
+	if len(r.Prs) == 1 {
 		r.becomeLeader()
 		return
 	}
 
 	// 发送投票请求
-	for _, p := range r.config.peers {
+	for p, _ := range r.Prs {
 		if p != r.id {
 			r.msgs = append(r.msgs, pb.Message{
 				MsgType: pb.MessageType_MsgRequestVote,
@@ -649,6 +684,7 @@ func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 func (r *Raft) handlePropose(m pb.Message) {
 	// 处理Propose
 	// 添加到本地
+	r.log("handle propose")
 	for _, entry := range m.Entries {
 		entry.Index = r.RaftLog.LastIndex() + 1
 		entry.Term = r.Term
@@ -699,6 +735,21 @@ func (r *Raft) updateCommitIndexForLeader() {
 			// 心跳通知来更新follower的commitIndex
 			r.sendAppendAllPeers()
 			break
+		}
+	}
+}
+
+const debug = true
+
+func (r *Raft) log(format string, args ...interface{}) {
+	if debug {
+		outputColor := 30 + r.id
+		sprintf := fmt.Sprintf("%c[0;40;%dm id[%v]state[%v]term[%v]commited[%v]applied[%v]: %c[0m",
+			0x1B, outputColor, r.id, r.State.StateInfo(), r.Term, r.RaftLog.committed, r.RaftLog.applied, 0x1B)
+		if len(args) != 0 {
+			fmt.Printf(sprintf+format+"\n", args...)
+		} else {
+			fmt.Printf(sprintf + format + "\n")
 		}
 	}
 }

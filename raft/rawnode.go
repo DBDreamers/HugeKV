@@ -170,7 +170,7 @@ func (rn *RawNode) Ready() Ready {
 	}
 
 	// specifies entries to be saved to stable storage BEFORE Messages are sent.
-	entries := rn.Raft.RaftLog.Entries(rn.Raft.RaftLog.stabled+1, rn.Raft.RaftLog.entries[len(rn.Raft.RaftLog.entries)-1].Index+1)
+	entries := rn.Raft.RaftLog.Entries(rn.Raft.RaftLog.stabled+1, rn.Raft.RaftLog.LastIndex()+1)
 
 	// specifies entries to be committed to a
 	// store/state-machine. These have previously been committed to stable store.
@@ -201,12 +201,22 @@ func (rn *RawNode) HasReady() bool {
 	}
 
 	// 是否有有未被持久化的日志
-	if rn.Raft.RaftLog.stabled+1 < rn.Raft.RaftLog.entries[len(rn.Raft.RaftLog.entries)-1].Index {
+	if rn.Raft.RaftLog.stabled+1 < rn.Raft.RaftLog.LastIndex() {
 		return true
 	}
 
 	// 是否有需要发送的消息
 	if len(rn.Raft.msgs) > 0 {
+		return true
+	}
+
+	// HardState出现更新
+	if !reflect.DeepEqual(rn.hardState, rn.GetHardState()) {
+		return true
+	}
+
+	// SoftSate出现更新
+	if !reflect.DeepEqual(rn.softState, *rn.GetSoftState()) {
 		return true
 	}
 

@@ -160,6 +160,9 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 		return l.storage.Term(i)
 	}
 	firstIndex := l.entries[0].Index
+	if i < firstIndex {
+		return l.storage.Term(i)
+	}
 	realIndex := i - firstIndex
 	if int(realIndex) >= len(l.entries) {
 		return 0, ErrUnavailable

@@ -165,7 +165,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 		title = title + "one client"
 	}
 	title = title + " (" + part + ")" // 3A or 3B
-
+	fmt.Println(title)
 	nservers := 5
 	cfg := config.NewTestConfig()
 	if maxraftlog != -1 {
@@ -355,7 +355,9 @@ func TestOnePartition2B(t *testing.T) {
 
 	region := cluster.GetRegion([]byte(""))
 	leader := cluster.LeaderOfRegion(region.GetId())
+	// s1: 三个节点, 包含当前的leader
 	s1 := []uint64{leader.GetStoreId()}
+	// s2: 两个节点
 	s2 := []uint64{}
 	for _, p := range region.GetPeers() {
 		if p.GetId() == leader.GetId() {
@@ -380,6 +382,7 @@ func TestOnePartition2B(t *testing.T) {
 	cluster.ClearFilters()
 
 	// old leader in minority, new leader should be elected
+	// 将s1中的一个非leader节点加入到s2网络中
 	s2 = append(s2, s1[2])
 	s1 = s1[:2]
 	cluster.AddFilter(&PartitionFilter{
