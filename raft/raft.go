@@ -19,6 +19,7 @@ import (
 	"fmt"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"math/rand"
+	"strconv"
 	"time"
 )
 
@@ -216,6 +217,7 @@ func newRaft(c *Config) *Raft {
 		}
 		raft.Prs[peerID] = &Progress{0, raft.RaftLog.LastIndex() + 1}
 	}
+	raft.log("init, raftLog: %+v", *raft.RaftLog)
 	return &raft
 }
 
@@ -307,7 +309,9 @@ func (r *Raft) sendHeartbeatOneRound() {
 // becomeFollower transform this peer's state to Follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	// Your Code Here (2A).
-	r.log("becomeFollower")
+	if term > r.Term {
+		r.log("becomeFollower: term:" + strconv.Itoa(int(term)) + " lead:" + strconv.Itoa(int(lead)))
+	}
 	r.State = StateFollower
 	r.Term = term
 	r.Lead = lead
@@ -728,16 +732,16 @@ func (r *Raft) updateCommitIndexForLeader() {
 	}
 }
 
-const debug = false
+const debug = true
 
 func (r *Raft) log(format string, args ...interface{}) {
 	if debug {
-		s := "%c[0;%d;%dm [%v][%v][%v]: " + format + "%c[0m\n"
+		s := "%c[0;40;%dm [%v][%v][%v]: " + format + "%c[0m\n"
 		outputColor := 30 + r.id
 		if len(args) != 0 {
-			fmt.Printf(s, 0x1B, 40, outputColor, r.id, r.State.StateInfo(), r.Term, args, 0x1B)
+			fmt.Printf(s, 0x1B, outputColor, r.id, r.State.StateInfo(), r.Term, args, 0x1B)
 		} else {
-			fmt.Printf(s, 0x1B, 40, outputColor, r.id, r.State.StateInfo(), r.Term, 0x1B)
+			fmt.Printf(s, 0x1B, outputColor, r.id, r.State.StateInfo(), r.Term, 0x1B)
 		}
 	}
 }
