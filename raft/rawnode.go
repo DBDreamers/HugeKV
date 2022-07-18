@@ -179,7 +179,7 @@ func (rn *RawNode) Ready() Ready {
 	committedEntries := rn.Raft.RaftLog.nextEnts()
 
 	// specifies outbound messages to be sent AFTER Entries are committed to stable storage.
-	messages := make([]pb.Message, 0)
+	var messages []pb.Message
 	messages = append(messages, rn.Raft.msgs...)
 
 	// 清空msgs

@@ -2,7 +2,6 @@ package raftstore
 
 import (
 	"fmt"
-	"github.com/Connor1996/badger"
 	"github.com/golang/protobuf/proto"
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
@@ -70,11 +69,11 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			ifSnap = d.Apply(request, &resp)
 		}
 		for index, prop := range d.proposals {
-			if entry.Index == prop.index {
-				prop.cb.Done(&resp)
+			if entry.Index == prop.index && entry.Term == prop.term {
 				if ifSnap {
 					prop.cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
 				}
+				prop.cb.Done(&resp)
 				d.proposals = append(d.proposals[0:index], d.proposals[index+1:]...)
 				break
 			}
@@ -102,19 +101,23 @@ func (d *peerMsgHandler) Apply(cmd *raft_cmdpb.Request, resp *raft_cmdpb.RaftCmd
 		return false
 	case raft_cmdpb.CmdType_Get:
 		txn := d.ctx.engine.Raft.NewTransaction(false)
-		iter := txn.NewIterator(badger.DefaultIteratorOptions)
-		defer iter.Close()
-		iter.Seek(cmd.Get.Key)
-		val, err := iter.Item().Value()
-		if err != nil {
-			BindRespError(resp, err)
-		}
 		ret := raft_cmdpb.Response{
 			CmdType: raft_cmdpb.CmdType_Get,
-			Get: &raft_cmdpb.GetResponse{
-				Value: val,
-			},
+			Get:     &raft_cmdpb.GetResponse{},
 		}
+		item, err := txn.Get(cmd.Get.Key)
+		if err != nil {
+			BindRespError(resp, err)
+			resp.Responses = append(resp.Responses, &ret)
+			return false
+		}
+		val, err := item.Value()
+		if err != nil {
+			BindRespError(resp, err)
+			resp.Responses = append(resp.Responses, &ret)
+			return false
+		}
+		ret.Get.Value = val
 		resp.Responses = append(resp.Responses, &ret)
 		return false
 	case raft_cmdpb.CmdType_Delete:

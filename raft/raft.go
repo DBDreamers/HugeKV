@@ -34,6 +34,18 @@ const (
 	StateLeader
 )
 
+func (s *StateType) StateInfo() string {
+	switch *s {
+	case StateFollower:
+		return "follower"
+	case StateCandidate:
+		return "candidate"
+	case StateLeader:
+		return "leader"
+	}
+	return ""
+}
+
 var stmap = [...]string{
 	"StateFollower",
 	"StateCandidate",
@@ -53,11 +65,11 @@ type Config struct {
 	// ID is the identity of the local raft. ID cannot be 0.
 	ID uint64
 
-	// Peers contains the IDs of all nodes (including self) in the raft cluster. It
+	// peers contains the IDs of all nodes (including self) in the raft cluster. It
 	// should only be set when starting a new raft cluster. Restarting raft from
-	// previous configuration will panic if Peers is set. peer is private and only
+	// previous configuration will panic if peers is set. peer is private and only
 	// used for testing right now.
-	Peers []uint64
+	peers []uint64
 
 	// ElectionTick is the number of Node.Tick invocations that must pass between
 	// elections. That is, if a follower does not receive any message from the
@@ -166,19 +178,25 @@ func newRaft(c *Config) *Raft {
 		panic(err.Error())
 	}
 	// Your Code Here (2A).
-	state, _, err := c.Storage.InitialState()
+	state, confState, err := c.Storage.InitialState()
 	if err != nil {
 		return nil
+	}
+	var peers []uint64
+	if c.peers == nil || len(c.peers) == 0 {
+		peers = confState.Nodes
+	} else {
+		peers = c.peers
 	}
 	raft := Raft{
 		config:           *c,
 		id:               c.ID,
-		Term:             state.Term,                               // 初始Term为0
-		Vote:             state.Vote,                               // 0代表还没有给任何节点投票（Raft节点ID不为0）
-		RaftLog:          newLog(c.Storage),                        // project2AA不考虑
-		Prs:              make(map[uint64]*Progress, len(c.Peers)), // project2AA不考虑
-		State:            StateFollower,                            // 初始为StateFollower
-		votes:            make(map[uint64]bool),                    // 记录自己给哪些节点投票，测试要用
+		Term:             state.Term,                             // 初始Term为0
+		Vote:             state.Vote,                             // 0代表还没有给任何节点投票（Raft节点ID不为0）
+		RaftLog:          newLog(c.Storage),                      // project2AA不考虑
+		Prs:              make(map[uint64]*Progress, len(peers)), // project2AA不考虑
+		State:            StateFollower,                          // 初始为StateFollower
+		votes:            make(map[uint64]bool),                  // 记录自己给哪些节点投票，测试要用
 		msgs:             make([]pb.Message, 0),
 		Lead:             0,
 		heartbeatTimeout: c.HeartbeatTick,
@@ -188,8 +206,9 @@ func newRaft(c *Config) *Raft {
 		leadTransferee:   0, // project2AA不考虑
 		PendingConfIndex: 0, // project2AA不考虑
 	}
+	raft.log("peers: %v", peers)
 	// initial prs
-	for _, peerID := range c.Peers {
+	for _, peerID := range peers {
 		// matchIndex初始化为0, nextIndex初始化为lastLogIndex+1
 		if peerID == c.ID {
 			raft.Prs[peerID] = &Progress{raft.RaftLog.LastIndex(), raft.RaftLog.LastIndex() + 1}
@@ -278,7 +297,7 @@ func (r *Raft) tick() {
 }
 
 func (r *Raft) sendHeartbeatOneRound() {
-	for _, p := range r.config.Peers {
+	for p, _ := range r.Prs {
 		if p != r.id {
 			r.sendHeartbeat(p)
 		}
@@ -569,14 +588,14 @@ func (r *Raft) handleRequestVoteResponse(m pb.Message) {
 	if m.Reject == false {
 		r.voteSuccessCount++
 		// 变为Leader
-		if r.voteSuccessCount > len(r.config.Peers)/2 {
+		if r.voteSuccessCount > len(r.Prs)/2 {
 			r.becomeLeader()
 			return
 		}
 	} else {
 		r.voteFailCount++
 		// 当有一半及以上的节点投了反对票,则变回follower
-		if r.voteFailCount > len(r.config.Peers)/2 {
+		if r.voteFailCount > len(r.Prs)/2 {
 			r.becomeFollower(r.Term, 0)
 			return
 		}
@@ -589,13 +608,13 @@ func (r *Raft) startElection() {
 	r.log("startElection")
 	// 只有一个节点
 	r.Vote = r.id
-	if len(r.config.Peers) == 1 {
+	if len(r.Prs) == 1 {
 		r.becomeLeader()
 		return
 	}
 
 	// 发送投票请求
-	for _, p := range r.config.Peers {
+	for p, _ := range r.Prs {
 		if p != r.id {
 			r.msgs = append(r.msgs, pb.Message{
 				MsgType: pb.MessageType_MsgRequestVote,
@@ -709,10 +728,16 @@ func (r *Raft) updateCommitIndexForLeader() {
 	}
 }
 
-func (r *Raft) log(m string) {
-	fmt.Print(r.id)
-	fmt.Print("   ")
-	fmt.Print(r.Term)
-	fmt.Print("   ")
-	fmt.Println(m)
+const debug = false
+
+func (r *Raft) log(format string, args ...interface{}) {
+	if debug {
+		s := "%c[0;%d;%dm [%v][%v][%v]: " + format + "%c[0m\n"
+		outputColor := 30 + r.id
+		if len(args) != 0 {
+			fmt.Printf(s, 0x1B, 40, outputColor, r.id, r.State.StateInfo(), r.Term, args, 0x1B)
+		} else {
+			fmt.Printf(s, 0x1B, 40, outputColor, r.id, r.State.StateInfo(), r.Term, 0x1B)
+		}
+	}
 }
