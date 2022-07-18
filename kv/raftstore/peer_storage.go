@@ -310,6 +310,7 @@ func ClearMeta(engines *engine_util.Engines, kvWB, raftWB *engine_util.WriteBatc
 func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.WriteBatch) error {
 	// Your Code Here (2B).
 	// 持久化raftLog
+	ps.log("stable: %+v", entries)
 	for _, entry := range entries {
 		key := meta.RaftLogKey(ps.region.Id, entry.Index)
 		err := raftWB.SetMeta(key, &entry)
@@ -317,6 +318,15 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 			return err
 		}
 	}
+	raftWB.MustWriteToDB(ps.Engines.Raft)
+	hi := entries[len(entries)-1].Index
+	hiTerm := entries[len(entries)-1].Term
+	lo := entries[0].Index
+	ps.raftState.LastIndex = hi
+	ps.raftState.LastTerm = hiTerm
+	ent, _ := ps.Entries(lo, hi+1)
+	ps.log("get entries from %d to %d: %+v", lo, hi, ent)
+	raftWB.Reset()
 	// 删除不会再被commit的日志, 即该次持久化的最高entry的index之后的已持久化日志,是否有term小于该entry的term的情况,若有则进行删除
 	index := entries[len(entries)-1].Index
 	term := entries[len(entries)-1].Term
@@ -335,11 +345,14 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 			break
 		}
 	}
-	err = raftWB.WriteToDB(ps.Engines.Raft)
-	if err != nil {
-		return err
-	}
+	raftWB.WriteToDB(ps.Engines.Raft)
 	return nil
+}
+
+func (r *PeerStorage) log(format string, args ...interface{}) {
+	if debug {
+		fmt.Printf("peer_storage: "+format+"\n", args...)
+	}
 }
 
 // Apply the peer with given snapshot

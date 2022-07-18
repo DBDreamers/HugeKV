@@ -744,8 +744,8 @@ const debug = true
 func (r *Raft) log(format string, args ...interface{}) {
 	if debug {
 		outputColor := 30 + r.id
-		sprintf := fmt.Sprintf("%c[0;40;%dm id[%v]state[%v]term[%v]commited[%v]applied[%v]: %c[0m",
-			0x1B, outputColor, r.id, r.State.StateInfo(), r.Term, r.RaftLog.committed, r.RaftLog.applied, 0x1B)
+		sprintf := fmt.Sprintf("%c[0;40;%dm id[%v]state[%v]term[%v]commited[%v]applied[%v]stabled[%d]: %c[0m",
+			0x1B, outputColor, r.id, r.State.StateInfo(), r.Term, r.RaftLog.committed, r.RaftLog.applied, r.RaftLog.stabled, 0x1B)
 		if len(args) != 0 {
 			fmt.Printf(sprintf+format+"\n", args...)
 		} else {
