@@ -16,7 +16,6 @@ package raft
 
 import (
 	"errors"
-	"fmt"
 	"reflect"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
@@ -79,7 +78,6 @@ type RawNode struct {
 // NewRawNode returns a new RawNode given configuration and a list of raft peers.
 func NewRawNode(config *Config) (*RawNode, error) {
 	// Your Code Here (2A).
-	fmt.Println(config.ID)
 	node := &RawNode{
 		Raft: newRaft(config),
 		softState: SoftState{
@@ -211,6 +209,7 @@ func (rn *RawNode) HasReady() bool {
 	if len(rn.Raft.msgs) > 0 {
 		return true
 	}
+
 
 	// HardState出现更新
 	if !reflect.DeepEqual(rn.hardState, rn.GetHardState()) {
