@@ -127,6 +127,9 @@ func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
 	if l.entries == nil || len(l.entries) == 0 {
 		index, err := l.storage.LastIndex()
+		if l.pendingSnapshot != nil && l.pendingSnapshot.Metadata.Index > index {
+			index = l.pendingSnapshot.Metadata.Index
+		}
 		if err != nil {
 			return 0
 		}
@@ -155,6 +158,9 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
 	if i == 0 {
 		return 0, nil
+	}
+	if l.pendingSnapshot != nil && l.pendingSnapshot.Metadata.Index == i {
+		return l.pendingSnapshot.Metadata.Term, nil
 	}
 	if l.entries == nil || len(l.entries) == 0 {
 		return l.storage.Term(i)
