@@ -231,6 +231,10 @@ func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
 	var entries []*pb.Entry
 	low := r.Prs[to].Next
+	if r.RaftLog.pendingSnapshot != nil && low <= r.RaftLog.pendingSnapshot.Metadata.Index {
+		r.sendSnapShot(to)
+		return true
+	}
 	preLogIndex := low - 1
 	preLogTerm, err := r.RaftLog.Term(preLogIndex)
 	if err != nil {
@@ -259,6 +263,17 @@ func (r *Raft) sendAppend(to uint64) bool {
 	})
 	r.log("send append to %d, index range: %d ~ %d ", to, low, high)
 	return true
+}
+
+func (r *Raft) sendSnapShot(to uint64) {
+	r.msgs = append(r.msgs, pb.Message{
+		MsgType:  pb.MessageType_MsgSnapshot,
+		To:       to,
+		From:     r.id,
+		Term:     r.Term,
+		Commit:   r.RaftLog.committed,
+		Snapshot: r.RaftLog.pendingSnapshot,
+	})
 }
 
 // sendHeartbeat sends a heartbeat RPC to the given peer.
@@ -392,6 +407,8 @@ func (r *Raft) Step(m pb.Message) error {
 			r.handleAppendEntries(m)
 		case pb.MessageType_MsgPropose:
 			r.handleProposeForFollower(m)
+		case pb.MessageType_MsgSnapshot:
+			r.handleSnapshot(m)
 		}
 	case StateCandidate:
 		switch m.MsgType {
@@ -406,6 +423,8 @@ func (r *Raft) Step(m pb.Message) error {
 			r.handleHeartbeat(m)
 		case pb.MessageType_MsgAppend:
 			r.handleAppendEntries(m)
+		case pb.MessageType_MsgSnapshot:
+			r.handleSnapshot(m)
 		}
 	case StateLeader:
 		switch m.MsgType {
@@ -423,6 +442,8 @@ func (r *Raft) Step(m pb.Message) error {
 			r.handleAppendEntriesResponse(m)
 		case pb.MessageType_MsgPropose:
 			r.handlePropose(m)
+		case pb.MessageType_MsgSnapshot:
+			r.handleSnapshot(m)
 		}
 	}
 	return nil
@@ -535,6 +556,29 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
+	if m.Term > r.Term {
+		r.becomeFollower(m.Term, m.From)
+	}
+
+	if r.State == StateLeader {
+		return
+	}
+
+	md := m.Snapshot.Metadata
+
+	// 更新RaftLog.SnapShot
+	r.RaftLog.pendingSnapshot = m.Snapshot
+
+	// 更新Prs
+	r.Prs = make(map[uint64]*Progress, len(md.ConfState.Nodes))
+	for _, peerID := range md.ConfState.Nodes {
+		// matchIndex初始化为0, nextIndex初始化为lastLogIndex+1
+		if peerID == r.id {
+			r.Prs[peerID] = &Progress{r.RaftLog.LastIndex(), r.RaftLog.LastIndex() + 1}
+			continue
+		}
+		r.Prs[peerID] = &Progress{0, r.RaftLog.LastIndex() + 1}
+	}
 }
 
 // addNode add a new node to raft group
@@ -739,7 +783,7 @@ func (r *Raft) updateCommitIndexForLeader() {
 	}
 }
 
-const debug = true
+const debug = false
 
 func (r *Raft) log(format string, args ...interface{}) {
 	if debug {
