@@ -66,19 +66,24 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		}
 		cmd := raft_cmdpb.RaftCmdRequest{}
 		proto.Unmarshal(entry.Data, &cmd)
-		var ifSnap bool
-		for _, request := range cmd.Requests {
-			ifSnap = d.Apply(request, &resp)
-		}
-		for index, prop := range d.proposals {
-			if entry.Index == prop.index && entry.Term == prop.term {
-				if ifSnap {
-					prop.cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
-				}
-				prop.cb.Done(&resp)
-				d.proposals = append(d.proposals[0:index], d.proposals[index+1:]...)
-				break
+		if cmd.Requests != nil {
+			var ifSnap bool
+			for _, request := range cmd.Requests {
+				ifSnap = d.ApplyRequest(request, &resp)
 			}
+			for index, prop := range d.proposals {
+				if entry.Index == prop.index && entry.Term == prop.term {
+					if ifSnap {
+						prop.cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
+					}
+					prop.cb.Done(&resp)
+					d.proposals = append(d.proposals[0:index], d.proposals[index+1:]...)
+					break
+				}
+			}
+		}
+		if cmd.AdminRequest != nil {
+			d.ApplyAdmin(cmd.AdminRequest)
 		}
 	}
 
@@ -86,7 +91,16 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	d.RaftGroup.Advance(ready)
 }
 
-func (d *peerMsgHandler) Apply(cmd *raft_cmdpb.Request, resp *raft_cmdpb.RaftCmdResponse) bool {
+func (d *peerMsgHandler) ApplyAdmin(request *raft_cmdpb.AdminRequest) {
+	switch request.CmdType {
+	case raft_cmdpb.AdminCmdType_CompactLog:
+		d.peerStorage.applyState.TruncatedState.Index = request.CompactLog.CompactIndex
+		d.peerStorage.applyState.TruncatedState.Term = request.CompactLog.CompactTerm
+		d.ScheduleCompactLog(request.CompactLog.CompactIndex)
+	}
+}
+
+func (d *peerMsgHandler) ApplyRequest(cmd *raft_cmdpb.Request, resp *raft_cmdpb.RaftCmdResponse) bool {
 	wb := engine_util.WriteBatch{}
 	defer func() {
 		d.log("applied: cmd: %+v, resp: %+v", *cmd, resp)
@@ -249,7 +263,7 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 	})
 }
 
-const debug = true
+const debug = false
 
 func (r *peerMsgHandler) log(format string, args ...interface{}) {
 	if debug {

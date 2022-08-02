@@ -95,6 +95,10 @@ func newLog(storage Storage) *RaftLog {
 // grow unlimitedly in memory
 func (l *RaftLog) maybeCompact() {
 	// Your Code Here (2C).
+	i, _ := l.storage.FirstIndex()
+	if l.entries != nil && len(l.entries) > 0 && l.entries[0].Index <= i {
+		l.entries = append(make([]pb.Entry, 0), l.entries[i-l.entries[0].Index:]...)
+	}
 }
 
 // unstableEntries return all the unstable entries
@@ -118,6 +122,10 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 		return nil
 	}
 	firstIndex := l.entries[0].Index
+	index := int(l.committed + 1 - firstIndex)
+	if index > len(l.entries) {
+		index = len(l.entries)
+	}
 	entries := l.entries[l.applied+1-firstIndex : l.committed+1-firstIndex]
 	return entries
 }
@@ -127,6 +135,9 @@ func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
 	if l.entries == nil || len(l.entries) == 0 {
 		index, err := l.storage.LastIndex()
+		if l.pendingSnapshot != nil && l.pendingSnapshot.Metadata.Index > index {
+			index = l.pendingSnapshot.Metadata.Index
+		}
 		if err != nil {
 			return 0
 		}
@@ -156,7 +167,10 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	if i == 0 {
 		return 0, nil
 	}
-	if l.entries == nil || len(l.entries) == 0 {
+	if l.pendingSnapshot != nil && l.pendingSnapshot.Metadata.Index == i {
+		return l.pendingSnapshot.Metadata.Term, nil
+	}
+	if l.entries == nil || len(l.entries) == 0 || i < l.entries[0].Index {
 		return l.storage.Term(i)
 	}
 	firstIndex := l.entries[0].Index
@@ -164,10 +178,10 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 		return l.storage.Term(i)
 	}
 	realIndex := i - firstIndex
-	if int(realIndex) >= len(l.entries) {
+	if int(realIndex) >= len(l.entries) || int(realIndex) < 0 {
 		return 0, ErrUnavailable
 	}
-	return l.entries[realIndex].Term, nil
+	return l.entries[int(realIndex)].Term, nil
 }
 
 func (l *RaftLog) FirstIndexOfTargetTerm(term uint64) uint64 {
@@ -194,10 +208,19 @@ func (l *RaftLog) FirstIndexOfTargetTerm(term uint64) uint64 {
 }
 
 func (l *RaftLog) FirstIndex() uint64 {
-	if l.entries == nil || len(l.entries) == 0 {
-		return 0
+	if l.pendingSnapshot != nil {
+		return l.pendingSnapshot.Metadata.Index
 	}
-	return l.entries[0].Index
+	if l.entries == nil || len(l.entries) == 0 {
+		i, _ := l.storage.FirstIndex()
+		return i
+	}
+	m := l.entries[0].Index
+	s, _ := l.storage.FirstIndex()
+	if m < s {
+		return m
+	}
+	return s
 }
 
 func (l *RaftLog) SliceIndexOfTargetIndex(index uint64) int {

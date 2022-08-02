@@ -73,6 +73,7 @@ type RawNode struct {
 	// Your Data Here (2A).
 	softState SoftState
 	hardState pb.HardState
+	snapShot  pb.Snapshot
 }
 
 // NewRawNode returns a new RawNode given configuration and a list of raft peers.
@@ -156,6 +157,13 @@ func (rn *RawNode) Ready() Ready {
 	// Your Code Here (2A).
 	hs := pb.HardState{}
 	var ss *SoftState
+	snapShot := pb.Snapshot{}
+
+	// snapShot 出现更新
+	if rn.Raft.RaftLog.pendingSnapshot != nil && !reflect.DeepEqual(*rn.Raft.RaftLog.pendingSnapshot, rn.snapShot) {
+		snapShot = *rn.Raft.RaftLog.pendingSnapshot
+		rn.snapShot = *rn.Raft.RaftLog.pendingSnapshot
+	}
 
 	// HardState出现更新
 	if !reflect.DeepEqual(rn.hardState, rn.GetHardState()) {
@@ -189,12 +197,18 @@ func (rn *RawNode) Ready() Ready {
 		Entries:          entries,
 		CommittedEntries: committedEntries,
 		Messages:         messages,
+		Snapshot:         snapShot,
 	}
 }
 
 // HasReady called when RawNode user need to check if any Ready pending.
 func (rn *RawNode) HasReady() bool {
 	// Your Code Here (2A).
+	// 是否有新的快照
+	if rn.Raft.RaftLog.pendingSnapshot != nil && !reflect.DeepEqual(*rn.Raft.RaftLog.pendingSnapshot, rn.snapShot) {
+		return true
+	}
+
 	// 是否有未被apply的日志
 	if rn.Raft.RaftLog.applied < rn.Raft.RaftLog.committed {
 		return true
@@ -237,6 +251,9 @@ func (rn *RawNode) Advance(rd Ready) {
 	if len(rd.Entries) > 0 && rd.Entries[len(rd.Entries)-1].Index > rn.Raft.RaftLog.stabled {
 		rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
 	}
+
+	// 删除内存中已经被压缩的日志
+	rn.Raft.RaftLog.maybeCompact()
 }
 
 // GetProgress return the Progress of this node and its peers, if this
