@@ -336,6 +336,7 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	r.Term = term
 	r.Lead = lead
 	r.Vote = 0
+	r.leadTransferee = 0
 	r.resetElectionTimeout()
 }
 
@@ -353,6 +354,7 @@ func (r *Raft) becomeCandidate() {
 	r.voteSuccessCount = 1
 	r.voteFailCount = 0
 	r.votes[r.id] = true
+	r.leadTransferee = 0
 }
 
 // becomeLeader transform this peer's state to leader
@@ -378,8 +380,10 @@ func (r *Raft) becomeLeader() {
 		Term:    r.Term,
 		Entries: []*pb.Entry{entry},
 	})
+	r.Lead = r.id
 	r.Prs[r.id].Match = entry.Index
 	r.Prs[r.id].Next = entry.Index + 1
+	r.leadTransferee = 0
 	if err != nil {
 		return
 	}
@@ -409,6 +413,10 @@ func (r *Raft) Step(m pb.Message) error {
 			r.handleProposeForFollower(m)
 		case pb.MessageType_MsgSnapshot:
 			r.handleSnapshot(m)
+		case pb.MessageType_MsgTimeoutNow:
+			r.handleTimeoutNow(m)
+		case pb.MessageType_MsgTransferLeader:
+			r.handleLeaderTransferForFollower(m)
 		}
 	case StateCandidate:
 		switch m.MsgType {
@@ -444,6 +452,8 @@ func (r *Raft) Step(m pb.Message) error {
 			r.handlePropose(m)
 		case pb.MessageType_MsgSnapshot:
 			r.handleSnapshot(m)
+		case pb.MessageType_MsgTransferLeader:
+			r.handleLeaderTransfer(m)
 		}
 	}
 	return nil
@@ -605,11 +615,17 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
+	if _, exist := r.Prs[id]; exist {
+		return
+	}
+	r.Prs[id] = &Progress{0, r.RaftLog.LastIndex() + 1}
 }
 
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
+	delete(r.Prs, id)
+	r.updateCommitIndexForLeader()
 }
 
 // handleRequestVote 处理投票请求
@@ -727,6 +743,7 @@ func (r *Raft) handleHeartbeatResponse(m pb.Message) {
 }
 
 func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
+	r.log("handler AppendEntriesResponse from %d", m.From)
 	if m.Term > r.Term {
 		r.becomeFollower(m.Term, m.From)
 		return
@@ -742,6 +759,17 @@ func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 	// 若成功
 	r.Prs[m.From].Match = m.Index
 	r.Prs[m.From].Next = m.Index + 1
+	// if now is transferring
+	if m.From == r.leadTransferee {
+		if r.RaftLog.LastIndex() == r.Prs[r.leadTransferee].Match {
+			// transfer success, send timeoutNow
+			r.sendTimeoutNow(r.leadTransferee)
+			r.leadTransferee = 0
+		} else {
+			// transfer uncompleted, send append again
+			r.sendAppend(r.leadTransferee)
+		}
+	}
 	// 检查一下是否可以更新leader的commitIndex
 	r.updateCommitIndexForLeader()
 }
@@ -750,6 +778,11 @@ func (r *Raft) handlePropose(m pb.Message) {
 	// 处理Propose
 	// 添加到本地
 	r.log("handle propose")
+	// if now is transferring
+	if r.leadTransferee != 0 {
+		r.log("now is transferring to %d", r.leadTransferee)
+		return
+	}
 	for _, entry := range m.Entries {
 		entry.Index = r.RaftLog.LastIndex() + 1
 		entry.Term = r.Term
@@ -777,6 +810,7 @@ func (r *Raft) sendAppendAllPeers() {
 
 func (r *Raft) handleProposeForFollower(m pb.Message) {
 	// 当Follower收到Propose时,将该消息存下来等待发出去
+	m.To = r.Lead
 	r.msgs = append(r.msgs, m)
 }
 
@@ -804,7 +838,7 @@ func (r *Raft) updateCommitIndexForLeader() {
 	}
 }
 
-const debug = false
+const debug = true
 
 func (r *Raft) log(format string, args ...interface{}) {
 	if debug {
@@ -817,4 +851,60 @@ func (r *Raft) log(format string, args ...interface{}) {
 			fmt.Printf(sprintf + format + "\n")
 		}
 	}
+}
+
+func (r *Raft) handleLeaderTransfer(m pb.Message) {
+	// check now is transferring, and we receive a new transferee
+	r.log("handle leader transfer, transfer to %d", m.From)
+	if r.leadTransferee == m.From {
+		return
+	}
+	if r.leadTransferee != m.From {
+		if _, exist := r.Prs[m.From]; !exist {
+			return
+		}
+		r.leadTransferee = m.From
+	}
+	if r.RaftLog.LastIndex() == r.Prs[r.leadTransferee].Match {
+		// timeoutNow
+		r.sendTimeoutNow(r.leadTransferee)
+		r.leadTransferee = 0
+	} else {
+		r.sendAppend(r.leadTransferee)
+	}
+}
+
+func (r *Raft) sendTimeoutNow(transferee uint64) {
+	r.msgs = append(r.msgs, pb.Message{
+		MsgType: pb.MessageType_MsgTimeoutNow,
+		To:      transferee,
+		From:    r.id,
+		Term:    r.Term,
+		Index:   r.RaftLog.LastIndex(),
+		LogTerm: r.RaftLog.LastTerm(),
+	})
+}
+
+func (r *Raft) handleTimeoutNow(m pb.Message) {
+	// become to leader
+	r.log("handle time out, step a hup msg")
+	// if now it is out of group
+	if _, exist := r.Prs[r.id]; !exist {
+		return
+	}
+	err := r.Step(pb.Message{
+		MsgType: pb.MessageType_MsgHup,
+		To:      r.id,
+		From:    r.id,
+		Term:    r.Term,
+	})
+	if err != nil {
+		return
+	}
+
+}
+
+func (r *Raft) handleLeaderTransferForFollower(m pb.Message) {
+	m.To = r.Lead
+	r.msgs = append(r.msgs, m)
 }
