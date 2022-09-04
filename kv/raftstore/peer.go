@@ -124,7 +124,10 @@ func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, r
 	}
 
 	appliedIndex := ps.AppliedIndex()
-	rg, _ := meta.GetRegionLocalState(engines.Kv, region.GetId())
+	rg, err := meta.GetRegionLocalState(engines.Kv, region.GetId())
+	if err != nil {
+		panic(err)
+	}
 	prs := make([]uint64, 0)
 	for _, p := range rg.Region.Peers {
 		prs = append(prs, p.Id)
