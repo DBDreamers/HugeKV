@@ -436,6 +436,7 @@ func (r *Raft) Step(m pb.Message) error {
 		return nil
 	}
 	if m.Term > r.Term {
+		// 根据论文，任何raft收到大term的消息都要变成follower
 		r.leadTransferee = None
 		r.becomeFollower(m.Term, None)
 	}
@@ -692,6 +693,8 @@ func (r *Raft) addNode(id uint64) {
 		r.Prs[id] = &Progress{Next: 1}
 	}
 	r.PendingConfIndex = None
+	// 这里需要发送一个commitIndex为0的heartbeat，用于让其他raftStore创建新的peer，新的peer会将初始log的index和term都设为0，所以会立即
+	// 触发leader的snapshot，新peer会根据snapshot带来的信息来更新自己的数据。这也是为什么创建store的时候所有raft的初始index为5
 	r.msgs = append(r.msgs, pb.Message{
 		MsgType: pb.MessageType_MsgHeartbeat,
 		To:      id,
@@ -707,6 +710,7 @@ func (r *Raft) removeNode(id uint64) {
 	if _, ok := r.Prs[id]; ok {
 		delete(r.Prs, id)
 		if r.State == StateLeader {
+			// 移除一个节点后可能会推进commit，尝试一下
 			r.leaderCommit()
 		}
 	}

@@ -333,6 +333,7 @@ func (d *peerMsgHandler) applyAdminRequest(entry *pb.Entry,
 		storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: region})
 		storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: newRegion})
 		storeMeta.Unlock()
+		// 这里需要把结果写入engine，因为创建peer的时候要从engine里读region信息
 		nwb := new(engine_util.WriteBatch)
 		meta.WriteRegionState(nwb, region, rspb.PeerState_Normal)
 		meta.WriteRegionState(nwb, newRegion, rspb.PeerState_Normal)

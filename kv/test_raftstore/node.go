@@ -25,7 +25,7 @@ type MockTransport struct {
 	sync.RWMutex
 
 	filters  []Filter
-	routers  map[uint64]message.RaftRouter
+	routers  map[uint64]message.RaftRouter // storeID -> router 测试用的transport直接用channel发消息
 	snapMgrs map[uint64]*snap.SnapManager
 }
 
