@@ -282,6 +282,7 @@ func (p *peer) Send(trans Transport, msgs []eraftpb.Message) {
 
 /// Collects all pending peers and update `peers_start_pending_time`.
 func (p *peer) CollectPendingPeers() []*metapb.Peer {
+	// pendingPeers是正在接收snapshot的peer
 	pendingPeers := make([]*metapb.Peer, 0, len(p.Region().GetPeers()))
 	truncatedIdx := p.peerStorage.truncatedIndex()
 	for id, progress := range p.RaftGroup.GetProgress() {
