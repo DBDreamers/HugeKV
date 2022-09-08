@@ -177,6 +177,8 @@ func (d *storeWorker) onRaftMessage(msg *rspb.RaftMessage) error {
 	if ok {
 		return nil
 	}
+
+	// addNode之后会走到这里
 	created, err := d.maybeCreatePeer(regionID, msg)
 	if err != nil {
 		return err

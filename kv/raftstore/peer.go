@@ -124,7 +124,10 @@ func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, r
 	}
 
 	appliedIndex := ps.AppliedIndex()
-	rg, _ := meta.GetRegionLocalState(engines.Kv, region.GetId())
+	rg, err := meta.GetRegionLocalState(engines.Kv, region.GetId())
+	if err != nil {
+		panic(err)
+	}
 	prs := make([]uint64, 0)
 	for _, p := range rg.Region.Peers {
 		prs = append(prs, p.Id)
@@ -279,6 +282,7 @@ func (p *peer) Send(trans Transport, msgs []eraftpb.Message) {
 
 /// Collects all pending peers and update `peers_start_pending_time`.
 func (p *peer) CollectPendingPeers() []*metapb.Peer {
+	// pendingPeers是正在接收snapshot的peer
 	pendingPeers := make([]*metapb.Peer, 0, len(p.Region().GetPeers()))
 	truncatedIdx := p.peerStorage.truncatedIndex()
 	for id, progress := range p.RaftGroup.GetProgress() {
